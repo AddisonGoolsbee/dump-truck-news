@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { HashRouter, Link, Route, Routes } from 'react-router-dom'
 
 import ArticlePage from './components/ArticlePage'
+import useIsMobile from './hooks/useIsMobile'
 import { buildUrl, formatDate, type NewsItem } from './news'
 
 const truncate = (text: string, limit = 220) =>
@@ -56,15 +57,13 @@ function App() {
 }
 
 function Feed({ news, error }: { news: NewsItem[]; error: string | null }) {
-  const isMobile = typeof window !== 'undefined' && window.matchMedia('(max-width: 767px)').matches
+  const isMobile = useIsMobile()
   const previewLimit = isMobile ? 140 : 220
 
   return (
     <>
       <header className="space-y-2 border-b border-slate-200 pb-6">
-        <p className="text-xs font-semibold uppercase tracking-[0.25em] text-rose-600">
-          Schizo News
-        </p>
+        <p className="text-xs font-semibold uppercase tracking-[0.25em] text-rose-600">Schizo News</p>
         <h1 className="text-3xl font-bold leading-tight text-slate-900 md:text-5xl">
           Latest drops
         </h1>
