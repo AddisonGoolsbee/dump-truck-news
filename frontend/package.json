@@ -6,8 +6,11 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "predev": "pnpm news:index",
     "build": "tsc -b && vite build",
+    "prebuild": "pnpm news:index",
     "lint": "eslint .",
+    "news:index": "node scripts/gen-news-index.mjs",
     "preview": "vite preview"
   },
   "dependencies": {
