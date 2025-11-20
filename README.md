@@ -1,4 +1,4 @@
-# Hoglin Monorepo
+# Schizo News
 
 ## Frontend
 Frontend lives in `frontend/` (Vite + React + TypeScript with Tailwind). From that folder:

@@ -1,5 +1,5 @@
 {
-  "name": "hoglin-monorepo",
+  "name": "schizonews-monorepo",
   "private": true,
   "version": "0.0.0",
   "packageManager": "pnpm@10.13.1"

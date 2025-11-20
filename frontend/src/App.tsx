@@ -1,25 +1,11 @@
 import { useEffect, useState } from 'react'
+import { HashRouter, Link, Route, Routes } from 'react-router-dom'
 
-type NewsItem = {
-  headline: string
-  date: string
-  text: string
-  path: string
-}
+import ArticlePage from './components/ArticlePage'
+import { buildUrl, formatDate, type NewsItem } from './news'
 
 const truncate = (text: string, limit = 220) =>
   text.length > limit ? `${text.slice(0, limit).trimEnd()}…` : text
-
-const formatDate = (iso: string) =>
-  new Date(iso).toLocaleString(undefined, {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  })
-
-const buildUrl = (filename: string) => `${import.meta.env.BASE_URL}news/${filename}`
 
 function App() {
   const [news, setNews] = useState<NewsItem[]>([])
@@ -52,43 +38,64 @@ function App() {
   }, [])
 
   return (
-    <div className="min-h-screen bg-[#f5f6f8] text-slate-900">
-      <div className="mx-auto flex max-w-5xl flex-col gap-6 px-5 py-12 md:px-10">
-        <header className="space-y-2 border-b border-slate-200 pb-6">
-          <p className="text-xs font-semibold uppercase tracking-[0.25em] text-rose-600">
-            Hoglin News
-          </p>
-          <h1 className="text-4xl font-bold md:text-5xl text-slate-900">
-            Latest drops
-          </h1>
-        </header>
+    <HashRouter>
+      <div className="min-h-screen bg-[#f5f6f8] text-slate-900">
+        <div className="mx-auto flex max-w-5xl flex-col gap-6 px-5 py-12 md:px-10">
+          <Routes>
+            <Route path="/" element={<Feed news={news} error={error} />} />
+            <Route
+              path="/article/:name"
+              element={<ArticlePage news={news} onMissingError={setError} />}
+            />
+            <Route path="*" element={<p className="text-sm text-slate-600">Not found.</p>} />
+          </Routes>
+        </div>
+      </div>
+    </HashRouter>
+  )
+}
 
-        {error ? (
-          <p className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
-            {error}
-          </p>
-        ) : news.length === 0 ? (
-          <p className="text-sm text-slate-600">Loading drops…</p>
-        ) : (
-          <div className="flex flex-col gap-4">
-            {news.map((item) => (
-              <article
-                key={item.path}
-                className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm transition hover:border-rose-200 hover:shadow-md"
-              >
-                <h2 className="text-2xl font-bold leading-tight text-slate-900 md:text-3xl">
+function Feed({ news, error }: { news: NewsItem[]; error: string | null }) {
+  const isMobile = typeof window !== 'undefined' && window.matchMedia('(max-width: 767px)').matches
+  const previewLimit = isMobile ? 140 : 220
+
+  return (
+    <>
+      <header className="space-y-2 border-b border-slate-200 pb-6">
+        <p className="text-xs font-semibold uppercase tracking-[0.25em] text-rose-600">
+          Schizo News
+        </p>
+        <h1 className="text-3xl font-bold leading-tight text-slate-900 md:text-5xl">
+          Latest drops
+        </h1>
+      </header>
+
+      {error ? (
+        <p className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+          {error}
+        </p>
+      ) : news.length === 0 ? (
+        <p className="text-sm text-slate-600">Loading drops…</p>
+      ) : (
+        <div className="flex flex-col gap-4">
+          {news.map((item) => (
+            <Link key={item.path} to={`/article/${encodeURIComponent(item.path)}`}>
+              <article className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm transition hover:border-rose-200 hover:shadow-md md:p-5">
+                <h2 className="text-xl font-bold leading-tight text-slate-900 md:text-3xl">
                   {item.headline}
                 </h2>
-                <p className="mt-3 text-sm text-slate-700">{truncate(item.text)}</p>
-                <p className="mt-2 text-[11px] font-semibold italic uppercase tracking-wide text-slate-500">
+                <p className="mt-2 text-xs leading-relaxed text-slate-700 md:mt-3 md:text-sm">
+                  {truncate(item.text, previewLimit)}
+                </p>
+                <p className="mt-2 text-[10px] font-semibold italic uppercase tracking-wide text-slate-500 md:text-[11px]">
                   {formatDate(item.date)}
                 </p>
               </article>
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
+            </Link>
+          ))}
+        </div>
+      )}
+    </>
   )
 }
 
