@@ -78,13 +78,18 @@ function App() {
 }
 
 function Feed({ news, error }: { news: NewsItem[]; error: string | null }) {
+  const isMobile = typeof window !== 'undefined' && window.matchMedia('(max-width: 767px)').matches
+  const previewLimit = isMobile ? 140 : 220
+
   return (
     <>
       <header className="space-y-2 border-b border-slate-200 pb-6">
         <p className="text-xs font-semibold uppercase tracking-[0.25em] text-rose-600">
           Hoglin News
         </p>
-        <h1 className="text-4xl font-bold md:text-5xl text-slate-900">Latest drops</h1>
+        <h1 className="text-3xl font-bold leading-tight text-slate-900 md:text-5xl">
+          Latest drops
+        </h1>
       </header>
 
       {error ? (
@@ -97,12 +102,14 @@ function Feed({ news, error }: { news: NewsItem[]; error: string | null }) {
         <div className="flex flex-col gap-4">
           {news.map((item) => (
             <Link key={item.path} to={`/article/${encodeURIComponent(item.path)}`}>
-              <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm transition hover:border-rose-200 hover:shadow-md">
-                <h2 className="text-2xl font-bold leading-tight text-slate-900 md:text-3xl">
+              <article className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm transition hover:border-rose-200 hover:shadow-md md:p-5">
+                <h2 className="text-xl font-bold leading-tight text-slate-900 md:text-3xl">
                   {item.headline}
                 </h2>
-                <p className="mt-3 text-sm text-slate-700">{truncate(item.text)}</p>
-                <p className="mt-2 text-[11px] font-semibold italic uppercase tracking-wide text-slate-500">
+                <p className="mt-2 text-xs leading-relaxed text-slate-700 md:mt-3 md:text-sm">
+                  {truncate(item.text, previewLimit)}
+                </p>
+                <p className="mt-2 text-[10px] font-semibold italic uppercase tracking-wide text-slate-500 md:text-[11px]">
                   {formatDate(item.date)}
                 </p>
               </article>
