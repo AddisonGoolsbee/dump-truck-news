@@ -10,7 +10,7 @@ export default function Header() {
           </Link>
         </h1>
         <p className="mt-2 text-center text-base text-neutral-500 font-serif" aria-live="polite">
-          RAW news brought to you HOURLY 😱🧠
+          Raw news brought to you HOURLY 😱🧠
         </p>
       </div>
     </div>

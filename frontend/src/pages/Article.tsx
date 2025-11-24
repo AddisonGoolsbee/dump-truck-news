@@ -64,11 +64,9 @@ function ArticlePage({ news, onMissingError }: Props) {
   }
 
   return (
-    <article className="space-y-4 pb-10 md:pb-14 pt-4 md:pt-5 px-4">
+    <article className="space-y-4 max-w-3xl mx-auto pb-10 md:pb-14 pt-4 md:pt-5 px-4">
       <h1 className="text-xl font-serif font-bold leading-snug md:text-4xl">{article.headline}</h1>
-      <p className="text-[11px] font-semibold italic uppercase tracking-wide md:text-xs">
-        {formatDate(article.date)}
-      </p>
+      <p className="text-[11px] font-semibold italic uppercase tracking-wide md:text-xs">{formatDate(article.date)}</p>
       <p className="whitespace-pre-line font-serif text-lg">{article.text}</p>
       <button
         className="inline-flex w-fit items-center gap-2 rounded-full bg-slate-900 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-white shadow transition hover:-translate-y-[1px] md:px-5 md:py-2.5"
