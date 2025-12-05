@@ -15,14 +15,17 @@ export default function Home({ news, error }: { news: NewsItem[]; error: string 
       ) : news.length === 0 ? (
         <></>
       ) : (
-        <div className="flex flex-col">
+        <div className="flex flex-col font-serif">
           <div className="mx-auto flex max-w-3xl flex-col">
             {news.map((item) => (
               <Link key={item.path} to={`/article/${encodeURIComponent(item.path)}`}>
                 <article className="w-full border-b border-neutral-200 bg-transparent p-4 md:p-5 hover:bg-neutral-100 transition ">
-                  <h2 className="text-xl font-serif font-bold leading-snug md:text-3xl">{item.headline}</h2>
-                  <p className="mt-2 text-sm font-serif leading-relaxed md:mt-3">{truncate(item.text, previewLimit)}</p>
-                  <p className="mt-3 text-[11px]">{formatDate(item.date)}</p>
+                  <h2 className="text-xl font-bold leading-snug md:text-3xl">{item.headline}</h2>
+                  <p className="mt-2 text-sm leading-relaxed md:mt-3">{truncate(item.text, previewLimit)}</p>
+                  <div className="flex flex-row justify-between mt-2 ">
+                    <p className="text-xs">{formatDate(item.date)}</p>
+                    <p className="text-xs underline-offset-2 underline font-semibold text-stone-700">READ MORE</p>
+                  </div>
                 </article>
               </Link>
             ))}
