@@ -1,15 +1,12 @@
 import { Link } from "react-router-dom";
-import { useMemo } from "react";
 import useIsMobile from "../hooks/useIsMobile";
 import { formatDate, type NewsItem } from "../news";
-import { QUOTES } from "../quotes";
 
 const truncate = (text: string, limit = 220) => (text.length > limit ? `${text.slice(0, limit).trimEnd()}…` : text);
 
 export default function Home({ news, error }: { news: NewsItem[]; error: string | null }) {
   const isMobile = useIsMobile();
   const previewLimit = isMobile ? 70 : 190;
-  const quote = useMemo(() => QUOTES[Math.floor(Math.random() * QUOTES.length)], []);
 
   return (
     <>
@@ -19,9 +16,6 @@ export default function Home({ news, error }: { news: NewsItem[]; error: string 
         <></>
       ) : (
         <div className="flex flex-col">
-          <div className="mx-auto text-center border-b border-neutral-200 p-2 w-full bg-neutral-100 sm:bg-inherit">
-            <blockquote className="font-serif mx-auto text-sm italic text-neutral-500 md:text-base">“{quote}”</blockquote>
-          </div>
           <div className="mx-auto flex max-w-3xl flex-col">
             {news.map((item) => (
               <Link key={item.path} to={`/article/${encodeURIComponent(item.path)}`}>
