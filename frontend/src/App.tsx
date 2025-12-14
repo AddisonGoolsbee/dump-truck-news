@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { HashRouter, Routes, Route } from "react-router-dom";
 
 import ArticlePage from "./pages/Article";
+import About from "./pages/About";
 import Header from "./components/Header";
 import Home from "./pages/Home";
 import { buildUrl, articleHash, type NewsItem } from "./news";
@@ -43,6 +44,7 @@ function App() {
         <Header />
           <Routes>
             <Route path="/" element={<Home news={news} error={error} />} />
+            <Route path="/about" element={<About />} />
             <Route path="/article/:name" element={<ArticlePage news={news} onMissingError={setError} />} />
             <Route path="*" element={<p className="text-sm">Not found</p>} />
           </Routes>

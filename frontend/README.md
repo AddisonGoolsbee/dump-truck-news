@@ -1,4 +1,4 @@
-# Schizo News Frontend
+# Dump Truck News Frontend
 
 Vite + React + TypeScript with Tailwind CSS preconfigured. Start editing `src/App.tsx` to build out Emoji News.
 

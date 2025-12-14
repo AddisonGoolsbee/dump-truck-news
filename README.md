@@ -1,4 +1,6 @@
-# Schizo News
+# Dump Truck News
+
+The greatest news.
 
 ## Frontend
 Frontend lives in `frontend/` (Vite + React + TypeScript with Tailwind). From that folder:
