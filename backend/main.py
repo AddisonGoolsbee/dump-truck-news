@@ -186,13 +186,13 @@ def process_single_article(article_data, hash_key, known_hashes, hashes_lock):
     emojipasta_data["date"] = str(timestamp)
     timestamp_str = timestamp.strftime("%Y%m%d_%H%M%S")
 
-    print(f"  > Generating thumbnail image... ({original_title})")
-    image_filename = generate_and_save_image(emojipasta_data, original_title, timestamp_str)
-    if image_filename:
-        emojipasta_data["image"] = os.path.basename(image_filename)
-        print(f"  > Image saved: {os.path.basename(image_filename)}")
-    else:
-        print("  > Image generation failed or skipped.")
+    # print(f"  > Generating thumbnail image... ({original_title})")
+    # image_filename = generate_and_save_image(emojipasta_data, original_title, timestamp_str)
+    # if image_filename:
+    #     emojipasta_data["image"] = os.path.basename(image_filename)
+    #     print(f"  > Image saved: {os.path.basename(image_filename)}")
+    # else:
+    #     print("  > Image generation failed or skipped.")
 
     # Save to JSON
     filename = save_emojipasta_json(emojipasta_data, original_title, timestamp_str)
