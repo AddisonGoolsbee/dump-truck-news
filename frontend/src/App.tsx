@@ -5,6 +5,7 @@ import ArticlePage from "./pages/Article";
 import About from "./pages/About";
 import Header from "./components/Header";
 import Home from "./pages/Home";
+import { PageViewTracker } from "./hooks/PageViewTracker";
 import { buildUrl, articleHash, type NewsItem } from "./news";
 
 function App() {
@@ -28,7 +29,7 @@ function App() {
           })
         );
 
-        const sorted = items.sort((a, b) => (b.file).localeCompare(a.file));
+        const sorted = items.sort((a, b) => b.file.localeCompare(a.file));
         setNews(sorted);
       } catch (err) {
         setError(err instanceof Error ? err.message : "Failed to load news.");
@@ -40,14 +41,15 @@ function App() {
 
   return (
     <HashRouter>
+      <PageViewTracker />
       <div className="min-h-screen bg-white">
         <Header />
-          <Routes>
-            <Route path="/" element={<Home news={news} error={error} />} />
-            <Route path="/about" element={<About />} />
-            <Route path="/article/:name" element={<ArticlePage news={news} onMissingError={setError} />} />
-            <Route path="*" element={<p className="text-sm">Not found</p>} />
-          </Routes>
+        <Routes>
+          <Route path="/" element={<Home news={news} error={error} />} />
+          <Route path="/about" element={<About />} />
+          <Route path="/article/:name" element={<ArticlePage news={news} onMissingError={setError} />} />
+          <Route path="*" element={<p className="text-sm">Not found</p>} />
+        </Routes>
       </div>
     </HashRouter>
   );

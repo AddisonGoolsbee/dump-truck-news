@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 
 export default function About() {
   const creditLine = useMemo(() => {
-    const names = ["Addison Goolsbee", "NAME REDACTED"];
+    const names = ["Addison Goolsbee", "Koray Akduman"];
     const shuffled = [...names].sort(() => Math.random() - 0.5);
     return shuffled.map((name) => {
       if (name === "Addison Goolsbee") {
@@ -20,9 +20,15 @@ export default function About() {
         );
       }
       return (
-        <span key={name} className="font-semibold text-neutral-500 ">
+        <a
+          key={name}
+          href="https://korayakduman.com"
+          target="_blank"
+          rel="noreferrer"
+          className="font-semibold text-neutral-500 underline"
+        >
           {name}
-        </span>
+        </a>
       );
     });
   }, []);

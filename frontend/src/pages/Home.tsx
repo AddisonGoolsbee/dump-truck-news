@@ -29,7 +29,7 @@ export default function Home({ news, error }: { news: NewsItem[]; error: string 
                   <p className="mt-2 text-sm leading-relaxed md:mt-3">{truncate(item.text, previewLimit)}</p>
                   <div className="flex flex-row justify-between mt-2 ">
                     <p className="text-sm text-neutral-500">{formatDate(item.date)}</p>
-                    <p className="text-xs underline-offset-2 underline font-semibold text-neutral-700">READ MORE</p>
+                    <p className="text-sm underline-offset-2 underline font-semibold text-neutral-700">READ MORE</p>
                   </div>
                 </article>
               </Link>
