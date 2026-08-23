@@ -1,12 +1,27 @@
+import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import useIsMobile from "../hooks/useIsMobile";
 import { formatDate, type NewsItem } from "../news";
 
 const truncate = (text: string, limit = 220) => (text.length > limit ? `${text.slice(0, limit).trimEnd()}…` : text);
 
+// Fixed display order for known sections; anything else falls back to alphabetical after these.
+const SECTION_ORDER = ["US & Canada", "World", "Business", "Technology", "Entertainment"];
+const DEFAULT_SECTION = "US & Canada";
+
 export default function Home({ news, error }: { news: NewsItem[]; error: string | null }) {
   const isMobile = useIsMobile();
   const previewLimit = isMobile ? 70 : 190;
+  const [activeSection, setActiveSection] = useState(DEFAULT_SECTION);
+
+  const sections = useMemo(() => {
+    const present = new Set(news.map((item) => item.section).filter((s): s is string => Boolean(s)));
+    const known = SECTION_ORDER.filter((s) => present.has(s));
+    const rest = [...present].filter((s) => !SECTION_ORDER.includes(s)).sort();
+    return ["All", ...known, ...rest];
+  }, [news]);
+
+  const visibleNews = activeSection === "All" ? news : news.filter((item) => item.section === activeSection);
 
   return (
     <>
@@ -21,11 +36,33 @@ export default function Home({ news, error }: { news: NewsItem[]; error: string 
               Updated every few hours by professional waste collectors.
             </blockquote>
           </div>
+          {sections.length > 2 && (
+            <div className="flex flex-wrap justify-center gap-2 border-b border-neutral-200 p-3">
+              {sections.map((section) => (
+                <button
+                  key={section}
+                  onClick={() => setActiveSection(section)}
+                  className={`rounded-full border px-3 py-1 text-xs uppercase tracking-wide transition md:text-sm ${
+                    activeSection === section
+                      ? "border-neutral-800 bg-neutral-800 text-white"
+                      : "border-neutral-300 text-neutral-600 hover:border-neutral-500 hover:text-neutral-900"
+                  }`}
+                >
+                  {section}
+                </button>
+              ))}
+            </div>
+          )}
           <div className="mx-auto flex max-w-4xl flex-col">
-            {news.map((item) => (
+            {visibleNews.map((item) => (
               <Link key={item.path} to={`/article/${encodeURIComponent(item.path)}`}>
                 <div className="flex flex-row-reverse md:flex-row items-center justify-end gap-3 md:gap-10 border-b border-neutral-200 p-4 bg-transparent hover:bg-neutral-100 transition ">
                   <article className="w-full">
+                    {item.section && (
+                      <p className="text-xs font-semibold uppercase tracking-wide text-neutral-400">
+                        {item.section}
+                      </p>
+                    )}
                     <h2 className="text-lg font-bold leading-snug md:text-3xl">{item.headline}</h2>
                     {!isMobile ? (
                       <p className="mt-2 text-sm leading-relaxed md:mt-3">{truncate(item.text, previewLimit)}</p>

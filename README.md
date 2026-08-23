@@ -29,13 +29,17 @@ From `backend/`:
 - Create `backend/.env` with:
   - `XAI_API_KEY`: XAI API key for Grok
   - `ARTICLE_HASH_KEY`: secret salt used to hash RSS GUIDs for deduping (example: `demo-secret-change-me-041f6a73`)
+  - `OPENAI_API_KEY`: OpenAI API key, only needed if thumbnail generation is enabled (see below)
 - Run: `python main.py`
 
 What it does:
-- Fetches top articles from a BBC RSS feed
-- Converts to emojipasta via Grok
+- Fetches the top article from each BBC section RSS feed (US & Canada, World, Business, Technology, Entertainment)
+- Converts each to emojipasta via Grok
 - Hashes the article GUID for deduplication
 - Writes JSON files into `frontend/public/news/`
+
+Thumbnails:
+- Disabled by default (costs ~$0.04/image via OpenAI). Set `ENABLE_THUMBNAILS=true` in `backend/.env` (and provide `OPENAI_API_KEY`) to turn them back on.
 
 Deduping:
 - Only articles with hashes not seen in the last 7 days are published.

@@ -5,6 +5,8 @@ export type NewsItem = {
   // Optional image filename sitting alongside the article JSON in `public/news/`
   // e.g. "20251214_010440_...jpg"
   image?: string;
+  // News section this article was pulled from (e.g. "World", "Business")
+  section?: string;
   // `path` is the public id used in URLs (we generate an article_hash from the headline)
   path: string;
   // original filename on disk (e.g. 20251120_083105_...json)
