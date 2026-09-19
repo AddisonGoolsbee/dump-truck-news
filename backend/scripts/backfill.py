@@ -17,7 +17,7 @@ Usage (from backend/, with the usual .env in place):
 
   python scripts/backfill.py collect --since 2026-08-26T12:00:00Z --out scripts/backfill_manifest.json
   python scripts/backfill.py run scripts/backfill_manifest.json --dry-run
-  python scripts/backfill.py run scripts/backfill_manifest.json [--limit N] [--include-unverified]
+  MAX_RUN_COST_USD=2 python scripts/backfill.py run scripts/backfill_manifest.json [--limit N] [--workers N] [--include-unverified]
 
 Afterwards commit frontend/public/news and push; the Pages deploy picks it up.
 """
@@ -219,7 +219,7 @@ def run(args) -> None:
     lock = Lock()
 
     def work(entry):
-        if pipeline.fatal_api_error:
+        if pipeline.fatal_api_error or pipeline.budget_exceeded:
             return None
         ts = datetime.fromisoformat(entry["timestamp"].replace("Z", "+00:00")).astimezone(timezone.utc)
         if args.dry_run:
@@ -229,7 +229,7 @@ def run(args) -> None:
         return pipeline.process_single_article(article, hash_key, known, lock, timestamp=ts)
 
     saved, failed = [], 0
-    with ThreadPoolExecutor(max_workers=3) as ex:
+    with ThreadPoolExecutor(max_workers=args.workers) as ex:
         futures = {ex.submit(work, e): e for e in todo}
         for fut in as_completed(futures):
             try:
@@ -244,8 +244,11 @@ def run(args) -> None:
 
     verb = "would be backfilled" if args.dry_run else "saved"
     print(f"\nBackfill done: {len(saved)} {verb}, {failed} failed, {len(todo) - len(saved) - failed} skipped as duplicates.")
+    print(f"Grok cost: ${pipeline.run_cost_usd:.4f} (cap MAX_RUN_COST_USD=${pipeline.MAX_RUN_COST_USD}; raise it via env for large backfills)")
     if pipeline.fatal_api_error:
         sys.exit(f"ERROR: xAI API rejected requests: {pipeline.fatal_api_error}")
+    if pipeline.budget_exceeded:
+        sys.exit(f"ERROR: stopped at the MAX_RUN_COST_USD cap (${pipeline.MAX_RUN_COST_USD}); re-run with a higher cap to continue.")
     if failed and not saved:
         sys.exit(1)
 
@@ -261,6 +264,7 @@ def main() -> None:
     r.add_argument("manifest")
     r.add_argument("--dry-run", action="store_true")
     r.add_argument("--limit", type=int, default=0)
+    r.add_argument("--workers", type=int, default=3, help="articles converted concurrently (each uses up to 3 Grok calls at once)")
     r.add_argument("--include-unverified", action="store_true", help="also process entries whose URL match is weak")
     r.set_defaults(func=run)
     args = parser.parse_args()

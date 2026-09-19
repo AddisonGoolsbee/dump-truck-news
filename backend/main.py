@@ -19,14 +19,12 @@ from xai_sdk.chat import user, system
 from utils import generate_thumbnail
 
 NUM_ARTICLES_PER_SECTION = 1
-MAX_ARTICLE_CHARS = 100000
+MAX_ARTICLE_CHARS = 8000  # the whole article is sent in one call; BBC pieces are ~4-8k chars
 MAX_IMAGE_GEN_ATTEMPTS = 3
 
-# Roughly matches real r/emojipasta density; below this we ask Grok to try again denser.
 EMOJI_PATTERN = re.compile(
     r"[\U0001F1E6-\U0001F1FF\U0001F300-\U0001FAFF☀-➿⬀-⯿️‍⃣]+"
 )
-MIN_EMOJI_PER_100_CHARS = 8.0
 
 
 def emoji_density(text: str) -> float:
@@ -292,46 +290,37 @@ def process_single_article(article_data, hash_key, known_hashes, hashes_lock, ti
     return filename
 
 
-MODEL = "grok-4.20-reasoning-latest"
+# Cost notes (Sept 2026): the Aug-22 rewrite used a reasoning model with up to 19 calls per article and burned
+# ~45c/article, which drained the xAI credits within days. This is the cheap version: ONE non-reasoning call
+# per article (~0.5-1c) with a compact prompt, plus a hard per-run spending cap so a regression can't do that again.
+MODEL = os.getenv("XAI_MODEL", "grok-4.20-non-reasoning")
+MAX_RUN_COST_USD = float(os.getenv("MAX_RUN_COST_USD", "0.10"))
+# One retry at most when the output comes back sparse; each attempt is ~0.5c, and the retries were the old cost sink.
+MAX_ATTEMPTS = 2
+MIN_EMOJI_PER_100_CHARS = 5.0
 
-# Shared style bible used for every paragraph-generation call. Generating each paragraph as its
-# own fresh call (instead of one long generation) is what actually fixes density tapering — a
-# single long generation reliably starts dense and fades by the final paragraph no matter how
-# hard the prompt insists otherwise, but every paragraph generated fresh against these examples
-# opens just as dense as paragraph 1 used to.
-PARAGRAPH_STYLE_RULES = """
-You are an r/emojipasta poster. You write ONE paragraph at a time of an unhinged "emojipasta" news rewrite: internet copypasta that reads like it was typed by someone way too invested, at 2am, mid rant. Respond with valid JSON only, no additional text.
+STYLE_RULES = """
+You are an r/emojipasta poster rewriting a real news article as unhinged "emojipasta": internet copypasta that reads like it was typed by someone way too invested, at 2am, mid rant. Respond with valid JSON only.
 
-Below are two FULL, ideal-quality example paragraphs on the same kind of dry political/trade subject matter you'll be working with. Study them closely — they are the bar for density, emoji clustering, caps ratio, punctuation, and innuendo. Every paragraph you write must match this bar, since each paragraph is judged fresh — there is no "easing in," open at full density immediately.
+Example of the target style (study the density, the single-emoji attachments, the caps ratio, the innuendo):
+"SENATE 🏛️ FINALLY 🏁 busts 💦 a NUT 🥜 on that 2 TRILLION 💰 dollar 💵 infraSTUDcture 🍆 bill 📜 after a MARATHON 🏃‍♂️ 15-hour 🕐 session that left 😵‍💫 everyone 🫠 DRIPPING 💧 with EXHAUSTION 🥵!! Majority 👑 Leader 👔 Dale 🍑 Whitfield, affectionately 💅 known 🏷️ as DILF 🐺 Dale to the interns 👀, STROKED 👐 every senator's 🧑‍⚖️ ego 🥴 one by one 🔂 until they FOLDED 🙇‍♂️ like a cheap 💸 lawn chair 🪑, finally SEALING 💍 the deal 🤝 at 3am 🌙 with a 62-38 vote 🗳️!! "We got RAILED 💦 by the process ⚙️," admitted 🎙️ Senator Beth Carrow, "but honestly 🤭? Kinda into it 😳.""
 
-EXAMPLE A:
-"SENATE 🏛️ FINALLY 🏁 busts 💦 a NUT 🥜 on that 2 TRILLION 💰 dollar 💵 infraSTUDcture 🍆 bill 📜 after a MARATHON 🏃‍♂️ 15-hour 🕐 session that left 😵‍💫 everyone 🫠 DRIPPING 💧 with EXHAUSTION 🥵!! Majority 👑 Leader 👔 Dale 🍑 Whitfield 🔥, affectionately 💅 known 🏷️ as DILF 🐺 Dale to the interns 👀, STROKED 👐 every senator's 🧑‍⚖️ ego 🥴 one by one 🔂 until they FOLDED 🙇‍♂️ like a cheap 💸 lawn chair 🪑, finally SEALING 💍 the deal 🤝 at 3am 🌙 with a 62-38 vote 🗳️✅!! "We got RAILED 💦 by the process ⚙️," admitted 🎙️ Senator Beth Carrow 😵‍💫, "but honestly 🤭? Kinda into it 😳." The bill INCLUDES 📋 400 billion 💵 for roads 🛣️, 200 billion for BRIDGES 🌉 (which, let's be honest 👀, is a metaphor 🤔 for how BADLY 🩹 both parties 🎭 needed to CONNECT 🔗 again 🔁), and a controversial 😬 rider 📎 that has fiscal hawks 🦅 SCREAMING 😱 bloody 🩸 murder 🔪 into their pillows 🛏️. Republicans 🐘 called it a "GIRTHY 👀 overreach," Democrats 🐴 called it "long OVERDUE 😩," and one anonymous 🤐 staffer 🧑‍💼 called it "the horniest 🌶️ thing I've seen 👁️ on that floor 🪵 since the legiSLAYtion 📜 of '09." Whitfield 🍑 celebrated 🎉 by popping CHAMPAGNE 🍾 in the cloakroom 🚪 and telling reporters 🎙️, breathlessly 😮‍💨, "we came 😳, we saw 👀, we approPORNiated 💰‼️" No cap 🧢, this session 🎬 was a full CANON EVENT 🔥 fr fr 💯, and the only thing DOUBLE-STACKED 💦💦 tonight was the paperwork 📑."
+Rules:
+1. DENSITY: roughly one emoji every 1-3 words, all the way to the LAST sentence — do not taper off. Vary the gaps so it doesn't read like a metronome.
+2. SINGLES: about 90% of attachment points are exactly ONE emoji. At most one 2-emoji stack per paragraph, for the biggest punchline.
+3. PICK LITERAL/PUN EMOJI tied to the specific word next to them (objects, animals, food, tools, weather, body parts). Do not lean on generic reaction faces (😤 😩 🥵 😳 🔥 💯 🙏 😭 💀 🤯 ✨ 😏) as filler; don't repeat any one emoji more than ~3 times per paragraph.
+4. CAPS: a third to half of words in caps for emphasis, never all of them — small words stay lowercase.
+5. PUNCTUATION: full normal sentences with commas, periods, quotes and "!!". Emoji are inserted between words, never replacing punctuation.
+6. INNUENDO in every paragraph: word-mangling swaps (infraSTUDcture, legiSLAYtion, approPORNiate), reframing the mundane action as a horny encounter (negotiating = edging, a deal closing = the climax, a long session = getting railed), a running thirsty nickname for ONE named person or entity (e.g. "Wab Kinew" -> "Wab Daddy") used throughout, and the odd suggestive aside from a fictional bystander. Keep it innuendo, not explicit.
+7. Light meme slang (bro, cooked, down bad, unc, built different) — sparingly.
+8. FACTS: every claim must trace back to the article. Keep names, numbers and quotes accurate. Don't invent plot details; the comedy is in the voice.
 
-EXAMPLE B:
-"TRADE 💼 negotiators 🤝 from three countries 🌍 FINALLY sealed 🔒 a deal 🤝 after 11 STRAIGHT hours 🕐 of back-and-forth 🔄 that left everyone drained 🪫 feeling THOROUGHLY negotiated 🥴. Chief 👑 negotiator 🧑‍💼 Renata Vance 🍑 — known 🏷️ around the ministry 🏛️ as "the CLOSER 🔒" for her ability 💪 to make ANYONE fold 🙇‍♀️ — reportedly kept delegates 🕴️ in the room 🚪 until 4am 🌙, PUMPING 💦 out CONcession after CUMcession 💦 like it was nothing personal 🤷‍♀️, just BUSINESS 💼. "She had us on our KNEES 🙇‍♂️ begging 🥺 for a BREAK 😭," admitted one exhausted 😵 delegate, "and honestly 🤭? We kind of liked it 😳." The final agreement SLASHES 🔪 tariffs 📉 by 15%, opens up DAIRY 🥛 markets 🛒 (a phrase 📝 that will never sound the same again 💦), and includes a side deal 🤫 SO steamy 🌶️ that both sides 👀 had to sign NDAs 🤐. Critics 🗣️ on both sides called it a "BACKDOOR 🚪 giveaway 💰," supporters 👏 called it "long 📏, HARD 🪨, and worth the wait 🍾," and Vance 🍑 herself just smirked 😏 and said 🗣️ "a good deal 🤝 is like a good time 💦 — you don't rush 🏃‍♀️ it, you just let it BUILD 📈." This whole THING 🔥 is giving 😍 unhinged trade-summit-turned-honeymoon-suite 🍯 energy 💫, and the only DOUBLE 👀 anyone got was the DOUBLE-CROSSED 🔪🔪 rider clause buried on page 40 📄."
+Write a headline (under 10 words, normal capitalization with a couple of CAPS bursts and 2-4 emoji) and 5-6 paragraphs of 80-130 words each, covering the article's facts in order, separated by blank lines.
 
-Break down what makes these work, so you replicate it precisely:
-1. EMOJI RHYTHM AND DENSITY — measured, not vibes: count it — these examples average roughly one emoji every 1-3 words. This is genuinely more emoji than feels natural to write — push past the instinct to stop. But do NOT turn this into a rigid metronome of exactly one emoji every single word — look at the gap pattern in the examples: sometimes two emoji land back-to-back words, sometimes there's a 3-5 word stretch with none before the next hits. That irregular rhythm is what makes it read as unhinged enthusiasm rather than a script. If every single gap in your paragraph is the same length, that's a mechanical failure just like the "one big pile of emoji" and "always pairs" failures — vary it.
-1b. SINGLES ARE THE DEFAULT — THIS IS CRITICAL: count the examples above — the overwhelming majority of attachment points (roughly 85-90%) are exactly ONE emoji. A 2-emoji stack appears at most ONCE per paragraph, reserved for the single biggest punchline (and even then it's often two DIFFERENT emoji making one joke, like 🔪🔪 for "double-crossed," not just any two emoji glued together as a habit). If you notice yourself pairing 2 emoji together at most attachment points, STOP — that is a mechanical failure that reads as repetitive and lazy, exactly the opposite of what we want. Default to one emoji, one word/phrase, over and over; save a double for one real moment, not a running habit.
-1c. NO GENERIC REACTION-FACE FILLER — this is what makes dense emoji read as slop instead of clever: reaching for the same handful of hype/reaction faces (😤 😩 🥵 😳 🔥 💯 🙏 😭 💀 🤯 ✨ 😏) as your default choice for every attachment point. Look at the examples again — the emoji are overwhelmingly CONCRETE and LITERAL: a wooden log 🪵 for "logged off," a magnifying glass 🔍 for "searching," a foot 🦶 for "100 feet," a nut 🥜 for "NUT," a lawn chair 🪑 for the actual chair mentioned, a slice of paper 📑 for "paperwork." For every word you're about to tag, ask "what OBJECT, ANIMAL, FOOD, TOOL, or BODY PART literally relates to this word or sounds like part of it" before defaulting to a generic emotion face. Reaction faces should be the minority of your emoji, used only where a specific reaction genuinely lands better than a concrete/literal choice — not the default.
-2. Long direct quotes are NOT an emoji-free zone. If you quote someone at length, either drop emoji right before/after the quoted chunk, or paraphrase the quote shorter and weave emoji through the paraphrase.
-3. PUNCTUATION: full normal punctuation — commas, periods, quotation marks around quotes, "!!", question marks. Emoji are inserted into grammatical sentences, never replacing punctuation.
-4. CAPS: roughly a third to half of words in caps, but clearly not all — small words (a, the, and, of, to, that, it, etc.) stay lowercase, so the caps still pop as emphasis. Adding more emoji is NOT an excuse to also capitalize more words — these are independent axes. A word can get an emoji while staying lowercase; do not cap something just because you're attaching an emoji to it. This paragraph is checked in isolation — a dramatic-feeling beat is NOT license to push this one paragraph toward all-caps; the 30-45% target applies to every single paragraph individually, not as a piece-wide average.
-4b. EMOJI VARIETY — do not lean on the same 2-3 "safe" emoji (😤 😩 🥵 etc.) over and over as filler to hit the density target. Repeating one emoji more than ~3 times in a single paragraph is a sign you're padding rather than choosing — pick the specific emoji that fits each specific word/joke instead, drawing from a wide range (reactions, objects, animals, food, weather, activities), not just your go-to hype faces.
-5. INNUENDO IS MANDATORY IN THIS PARAGRAPH TOO, not just somewhere in the piece — force at least one of these techniques into THIS paragraph specifically:
-   - word-mangling — this is a SWAP, not an insertion: replace ONE syllable of a real word with a phonetically similar filthy/slang syllable, keeping the rest of the word intact so the whole thing is still ONE pronounceable word, roughly the same length as the original, and instantly recognizable. GOOD: "concessions" -> "CUMcessions" (swap "con" for "CUM", same syllable count, reads instantly). BAD, DO NOT DO THIS: "concessions" -> "conCUMcessions" (inserting extra letters is clunky), "negotiators" -> "NEGOTHRUSTiators" (inserting a whole extra syllable breaks pronounceable flow), "finalize" -> "FINALI SEXY" (this is two separate words glued with a space — not a real word, incoherent, never do this). If you can't find a clean one-syllable SWAP for a word in this paragraph, skip it and use a different technique instead.
-   - reframing the mundane action in this beat as a sexual encounter: negotiating = foreplay/edging, a deal closing = the climax, a long session = getting railed/stroked/pumped, a compromise = getting on your knees, going long = worth the wait.
-   - use the running nickname (given below) for its target if they appear in this beat, ideally with a thirsty aside.
-   - a suggestive quote or aside from a fictionalized bystander reacting to how horny the process felt.
-
-OTHER STYLE RULES:
-- Internet/meme slang: bro, bruh, sigma, npc, cooked, mid, built different, down bad, unc, etc. Use naturally, don't force every one in, use them sparingly.
-- Stay factually grounded: every claim must trace back to the facts given below. Do not invent facts, quotes, or numbers — the innuendo is in the VOICE and WORD CHOICE, not fabricated plot details.
-- Output ONE paragraph only, roughly 80-130 words, as a single block of text (no internal line breaks).
-
-You must output valid JSON with exactly these fields:
+Output JSON exactly as:
 {
-    "paragraph": "the single emojipasta paragraph, ~80-130 words, dense per the rules above"
+    "headline": "...",
+    "text": "paragraph 1\\n\\nparagraph 2\\n\\n..."
 }
 """
 
@@ -340,7 +329,10 @@ You must output valid JSON with exactly these fields:
 # would fail the same way, so we stop retrying and make the whole run exit non-zero at the end.
 FATAL_API_ERROR_MARKERS = ("PERMISSION_DENIED", "UNAUTHENTICATED", "spending limit", "available credits", "Incorrect API key")
 fatal_api_error: str | None = None
-_fatal_lock = Lock()
+budget_exceeded = False
+run_cost_usd = 0.0
+run_tokens = {"prompt": 0, "completion": 0}
+_state_lock = Lock()
 
 
 def _api_error_summary(exc: Exception) -> str:
@@ -349,173 +341,104 @@ def _api_error_summary(exc: Exception) -> str:
     return m.group(1) if m else msg.strip().splitlines()[0][:300]
 
 
-def _chat_json(client, system_prompt, user_prompt, retry_note=""):
-    """One JSON-mode chat call with a couple of retries on parse failure. Returns the parsed dict or None."""
+def _record_usage(response) -> float:
+    """Add this response's cost/tokens to the run totals; returns the cost of this call (0 if unreported)."""
+    global run_cost_usd, budget_exceeded
+    cost = response.cost_usd or 0.0
+    usage = response.usage
+    with _state_lock:
+        run_cost_usd += cost
+        run_tokens["prompt"] += getattr(usage, "prompt_tokens", 0)
+        run_tokens["completion"] += getattr(usage, "completion_tokens", 0)
+        if run_cost_usd >= MAX_RUN_COST_USD and not budget_exceeded:
+            budget_exceeded = True
+            print(f"    BUDGET: run cost ${run_cost_usd:.4f} reached MAX_RUN_COST_USD=${MAX_RUN_COST_USD}; no further Grok calls.")
+    return cost
+
+
+def _chat_json(client, system_prompt, user_prompt):
+    """One JSON-mode chat call with a retry on parse failure. Returns (parsed dict or None, cost in USD)."""
     global fatal_api_error
-    for attempt in range(3):
-        if fatal_api_error:
-            return None
+    cost = 0.0
+    for attempt in range(2):
+        if fatal_api_error or budget_exceeded:
+            return None, cost
         try:
             chat = client.chat.create(model=MODEL)
             chat.append(system(system_prompt))
-            note = retry_note if attempt == 0 else f"{retry_note} Previous attempt was not valid JSON, attempt {attempt + 1}."
-            chat.append(user(f"{user_prompt} {note}".strip()))
+            note = "" if attempt == 0 else " Your previous reply was not valid JSON; reply with only the JSON object."
+            chat.append(user(user_prompt + note))
             response = chat.sample()
-            return json.loads(response.content.strip())
+            cost += _record_usage(response)
+            content = response.content.strip()
+            if content.startswith("```"):
+                content = re.sub(r"^```(?:json)?\s*|\s*```$", "", content)
+            return json.loads(content), cost
         except json.JSONDecodeError as e:
             print(f"    JSON parse failed (attempt {attempt + 1}): {e}")
         except Exception as e:
             if any(marker in str(e) for marker in FATAL_API_ERROR_MARKERS):
-                with _fatal_lock:
+                with _state_lock:
                     if not fatal_api_error:
                         fatal_api_error = _api_error_summary(e)
                         print(f"    FATAL xAI API error (will not retry): {fatal_api_error}")
-                return None
+                return None, cost
             print(f"    Unexpected error (attempt {attempt + 1}): {e}")
-    return None
-
-
-def plan_emojipasta(article_text, original_title, client):
-    """One call: produce the headline, a running horny nickname, and 5-6 fact 'beats' (one per paragraph)."""
-    if len(article_text) > MAX_ARTICLE_CHARS:
-        truncated = article_text[:MAX_ARTICLE_CHARS]
-        last_break = truncated.rfind("\n\n")
-        article_for_model = (truncated[:last_break] if last_break > 0 else truncated) + "\n\n[TRUNCATED]"
-    else:
-        article_for_model = article_text
-
-    system_prompt = """
-You are prepping a real news article to be rewritten paragraph-by-paragraph as unhinged r/emojipasta comedy. You must respond with valid JSON only.
-
-Do three things:
-1. Write a short, punchy emojipasta-style headline for the article (under 10 words). Use normal English capitalization with some ALL CAPS bursts for emphasis (not the whole thing), and 2-4 well-placed emoji (not one pile) — this is the reader's very first impression, make it hit.
-2. Pick ONE person or entity named in the article who will get a running horny/thirsty nickname used throughout the piece (e.g. "Wab Kinew" -> "Wab Daddy", "Renata Vance" -> "the Closer"). Keep it a clean pun or thirst-trap title, not explicit.
-3. Split the article's actual facts into 5-6 beats, in the article's narrative order, each beat a 2-4 sentence PLAIN ENGLISH summary of the distinct facts/quotes/numbers that one paragraph should cover. Beats should not overlap in content. Keep numbers, names, and quotes accurate to the source.
-
-Output JSON exactly as:
-{
-    "headline": "...",
-    "nickname_target": "the real name of the person getting the nickname",
-    "nickname": "the horny nickname",
-    "beats": ["beat 1 text", "beat 2 text", "... 5-6 total"]
-}
-"""
-    user_prompt = f"Article title: {original_title}\n\nArticle content:\n{article_for_model}\n\nOutput only the JSON described."
-    return _chat_json(client, system_prompt, user_prompt)
-
-
-def generate_paragraph(beat, headline, nickname_target, nickname, client):
-    """Generate one dense emojipasta paragraph for a single beat, retrying toward a density floor
-    while independently enforcing a caps ceiling (each paragraph is checked on its own — averaging
-    across paragraphs let one paragraph go almost fully caps while others stayed fine)."""
-    best_text, best_score = None, -1.0
-    feedback = ""
-
-    for attempt in range(3):
-        user_prompt = (
-            f"The overall piece's headline is: {headline}\n"
-            f"Running nickname for this piece: '{nickname}' for {nickname_target} — use it if {nickname_target} "
-            f"appears in this beat.\n"
-            f"Write ONE paragraph covering exactly these facts (do not add facts not listed here):\n{beat}\n"
-            f"Average roughly one emoji every 1-3 words, and VARY the gap unpredictably — some emoji back to "
-            f"back or 1 word apart, others 3-5 words apart, don't make every single gap the same length or it "
-            f"reads as a robotic metronome. 85-90% of attachments must be a SINGLE emoji, not a pair — at most "
-            f"one 2-emoji moment in the whole paragraph, for the single biggest punchline only. Caps stay under "
-            f"50% of words (ideally 30-45%) — this paragraph is checked on its own, not averaged with others, "
-            f"so don't let this one specific paragraph run hot on caps even if the topic feels dramatic.\n"
-            f"{feedback}"
-        )
-        result = _chat_json(client, PARAGRAPH_STYLE_RULES, user_prompt)
-        if not result or "paragraph" not in result:
-            continue
-
-        text = result["paragraph"]
-        density = emoji_density(text)
-        caps = caps_ratio(text)
-        slop = slop_ratio(text)
-        caps_ok = caps <= MAX_CAPS_RATIO
-        slop_ok = slop <= MAX_SLOP_RATIO
-        # Heavily discount candidates that blow past the caps/slop ceilings when picking the fallback-best.
-        score = density if (caps_ok and slop_ok) else density * 0.3
-        if score > best_score:
-            best_text, best_score = text, score
-
-        if density >= MIN_EMOJI_PER_100_CHARS and caps_ok and slop_ok:
-            return text
-
-        if attempt < 2:
-            notes = []
-            if density < MIN_EMOJI_PER_100_CHARS:
-                notes.append(
-                    f"Your last attempt averaged {density:.1f} emoji per 100 characters — still too sparse, "
-                    f"needs at least {MIN_EMOJI_PER_100_CHARS:.0f}. Add more SINGLE emoji attachments in the "
-                    f"gaps between words — do NOT fix this by pairing up 2 emoji at existing attachment points "
-                    f"(that recreates the all-clustered problem), and do NOT fix it by making every gap exactly "
-                    f"1 word (that creates a robotic metronome) — vary the gap length."
-                )
-            if not caps_ok:
-                notes.append(
-                    f"Your last attempt was {caps * 100:.0f}% ALL CAPS words — way too shouty, over the 50% "
-                    f"ceiling. Dial it back to 30-45%: most content words should be normal case, with only a "
-                    f"genuine minority capitalized for emphasis."
-                )
-            if not slop_ok:
-                notes.append(
-                    f"Your last attempt leaned too hard on generic reaction-face emoji ({', '.join(sorted(SLOP_EMOJI))}) "
-                    f"— {slop * 100:.0f}% of your emoji were from that small set, which reads as lazy filler no "
-                    f"matter how dense it is. Replace most of those with concrete, literal, or pun emoji tied to "
-                    f"the SPECIFIC word next to them (objects, animals, food, tools, body parts, weather) instead "
-                    f"of a recycled hype-face."
-                )
-            feedback = " ".join(notes)
-
-    return best_text
+    return None, cost
 
 
 def convert_to_emojipasta(article_text, original_title):
     """
-    Use Grok to convert article text to emojipasta format: one call to plan the headline/nickname/beats,
-    then one independent, fresh-context call per paragraph (each with its own density retry) so density
-    doesn't taper off over the course of a single long generation. Returns {"headline", "text"}.
+    One Grok call: headline + full emojipasta text. Returns {"headline", "text"} or None.
+    Density/caps/slop are measured and logged but not retried — retries were the main cost driver.
     """
     api_key = os.getenv("XAI_API_KEY")
     if not api_key:
         raise ValueError("XAI_API_KEY environment variable is not set")
 
-    client = Client(api_key=api_key, timeout=3600)
+    client = Client(api_key=api_key, timeout=600)
 
-    plan = plan_emojipasta(article_text, original_title, client)
-    if not plan or not all(k in plan for k in ("headline", "beats")):
-        print("  > Failed to plan emojipasta (headline/beats). Aborting this article.")
+    if len(article_text) > MAX_ARTICLE_CHARS:
+        truncated = article_text[:MAX_ARTICLE_CHARS]
+        last_break = truncated.rfind("\n\n")
+        article_text = (truncated[:last_break] if last_break > 0 else truncated) + "\n\n[TRUNCATED]"
+
+    base_prompt = (
+        f"Article title: {original_title}\n\nArticle content:\n{article_text}\n\n"
+        f"Now write the emojipasta. HARD REQUIREMENT: an emoji after every 1-3 words, in EVERY sentence of EVERY "
+        f"paragraph — that is 35-50 emoji per paragraph, {MIN_EMOJI_PER_100_CHARS:.0f}+ emoji per 100 characters. "
+        f"A paragraph with only a handful of emoji is a failure. Output only the JSON described."
+    )
+    total_cost = 0.0
+    best = None
+    feedback = ""
+    for attempt in range(MAX_ATTEMPTS):
+        result, cost = _chat_json(client, STYLE_RULES, base_prompt + feedback)
+        total_cost += cost
+        if not result or not isinstance(result.get("text"), str) or not result.get("headline"):
+            continue
+        text = result["text"].strip()
+        density = emoji_density(text)
+        if best is None or density > best[0]:
+            best = (density, result["headline"], text)
+        if density >= MIN_EMOJI_PER_100_CHARS:
+            break
+        feedback = (
+            f"\n\nYour previous attempt had only {density:.1f} emoji per 100 characters — far too sparse, it did not "
+            f"read as emojipasta at all. Rewrite it with an emoji attached after every 1-3 words throughout, "
+            f"including the final paragraph. Keep the facts the same."
+        )
+    if best is None:
+        print(f"  > Conversion returned no usable JSON. Aborting this article. (cost ${total_cost:.4f})")
         return None
-
-    headline = plan["headline"]
-    nickname_target = plan.get("nickname_target", "")
-    nickname = plan.get("nickname", "")
-    beats = plan["beats"]
-    print(f"  > Planned {len(beats)} paragraphs, running nickname: '{nickname}' for {nickname_target}")
-
-    paragraphs = [None] * len(beats)
-    with ThreadPoolExecutor(max_workers=min(len(beats), 3) or 1) as executor:
-        future_to_index = {
-            executor.submit(generate_paragraph, beat, headline, nickname_target, nickname, client): i
-            for i, beat in enumerate(beats)
-        }
-        for future in as_completed(future_to_index):
-            i = future_to_index[future]
-            try:
-                paragraphs[i] = future.result()
-            except Exception as e:
-                print(f"    Paragraph {i + 1} generation failed: {e}")
-
-    paragraphs = [p for p in paragraphs if p]
-    if not paragraphs:
-        print("  > All paragraph generations failed. Aborting this article.")
-        return None
-
-    text = "\n\n".join(paragraphs)
-    print(f"  > Final density: {emoji_density(text):.2f} emoji/100 chars across {len(paragraphs)} paragraphs.")
-    return {"headline": headline, "text": text}
+    cost = total_cost
+    _, headline, text = best
+    result = {"headline": headline, "text": text}
+    print(
+        f"  > density {emoji_density(text):.1f}/100ch, caps {caps_ratio(text) * 100:.0f}%, "
+        f"slop {slop_ratio(text) * 100:.0f}%, {len(text)} chars, cost ${cost:.4f} ({original_title[:50]})"
+    )
+    return {"headline": result["headline"], "text": text}
 
 
 def save_emojipasta_json(emojipasta_data, safe_title):
@@ -580,6 +503,10 @@ def main():
                 print(f"Article '{article['title']}' generated an exception: {exc}")
 
     print(f"\nConversion complete! Saved {len(saved_files)} of {len(articles)} articles ({failed} failed).")
+    print(
+        f"Grok cost this run: ${run_cost_usd:.4f} "
+        f"({run_tokens['prompt']} prompt + {run_tokens['completion']} completion tokens, cap ${MAX_RUN_COST_USD})"
+    )
     print("Saved files:")
     for filename in saved_files:
         print(f"  - {filename}")
@@ -602,6 +529,9 @@ def main():
     # GitHub Action goes red instead of silently succeeding with an empty commit step.
     if fatal_api_error:
         print(f"\nERROR: xAI API rejected requests: {fatal_api_error}", file=sys.stderr)
+        sys.exit(1)
+    if budget_exceeded:
+        print(f"\nERROR: run cost ${run_cost_usd:.4f} hit MAX_RUN_COST_USD=${MAX_RUN_COST_USD}; check for a cost regression.", file=sys.stderr)
         sys.exit(1)
     if failed and not saved_files:
         print(f"\nERROR: all {failed} conversion attempt(s) failed; nothing was saved.", file=sys.stderr)

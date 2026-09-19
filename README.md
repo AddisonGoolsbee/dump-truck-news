@@ -34,7 +34,8 @@ From `backend/`:
 
 What it does:
 - Fetches the top article from each BBC section RSS feed (US & Canada, World, Business, Technology, Entertainment)
-- Converts each to emojipasta via Grok
+- Converts each to emojipasta via one Grok call (non-reasoning model, ~0.5-1c per article)
+- Stops and fails the run if Grok spend exceeds `MAX_RUN_COST_USD` (default $0.10 per run); the run log prints the exact cost
 - Hashes the article GUID for deduplication
 - Writes JSON files into `frontend/public/news/`
 
@@ -43,6 +44,9 @@ Thumbnails:
 
 Deduping:
 - Only articles with hashes not seen in the last 7 days are published.
+
+Backfilling missed runs:
+- `python scripts/backfill.py collect --since <ISO time>` builds a manifest from failed workflow runs (needs `gh`), and `MAX_RUN_COST_USD=2 python scripts/backfill.py run <manifest>` generates them with their original timestamps. See the script's docstring.
 
 ## Useful scripts (frontend)
 
