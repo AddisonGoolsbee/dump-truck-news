@@ -1,5 +1,6 @@
 import io
 import os
+import sys
 import json
 import re
 import hashlib
@@ -159,73 +160,72 @@ def fetch_news_articles(rss_url, section_name, num_articles=1):
         article_id = guid_text.split("#")[0] if guid_text else None
 
         print(f"Fetching article {i+1}/{num_articles} [{section_name}]: {title}")
-
-        try:
-            # Fetch the full article page
-            article_response = requests.get(link)
-            article_response.raise_for_status()
-
-            # Parse the article page to extract content
-            soup = BeautifulSoup(article_response.text, "html.parser")
-
-            # BBC articles use specific tags for content
-            article_paragraphs = []
-
-            # Try to find article body paragraphs
-            article_body = soup.find("article")
-            if article_body:
-                paragraphs = article_body.find_all("p")
-                article_paragraphs = [p.get_text().strip() for p in paragraphs if p.get_text().strip()]
-
-            # Fallback: try data-component="text-block"
-            if not article_paragraphs:
-                text_blocks = soup.find_all(attrs={"data-component": "text-block"})
-                article_paragraphs = [block.get_text().strip() for block in text_blocks if block.get_text().strip()]
-
-            # Combine all content
-            full_article = "\n\n".join(article_paragraphs) if article_paragraphs else description
-
-            # Combine title, description, and full content
-            article_text = f"""Title: {title}
-
-{description}
-
-{full_article}"""
-
-            articles.append(
-                {
-                    "title": title,
-                    "description": description,
-                    "link": link,
-                    "content": article_text,
-                    "article_id": article_id,
-                    "section": section_name,
-                }
-            )
-
-        except Exception as e:
-            print(f"Error fetching article '{title}': {e}")
-            # Add basic info even if full content fetch fails
-            articles.append(
-                {
-                    "title": title,
-                    "description": description,
-                    "link": link,
-                    "content": f"""Title: {title}
-
-{description}""",
-                    "article_id": article_id,
-                    "section": section_name,
-                }
-            )
+        articles.append(build_article(title, description, link, article_id, section_name))
 
     return articles
 
 
-def process_single_article(article_data, hash_key, known_hashes, hashes_lock):
+def fetch_article_body(link: str) -> str:
+    """Fetch a BBC article page and return its body paragraphs joined by blank lines ('' if none found)."""
+    article_response = requests.get(link)
+    article_response.raise_for_status()
+
+    # Parse the article page to extract content
+    soup = BeautifulSoup(article_response.text, "html.parser")
+
+    # BBC articles use specific tags for content
+    article_paragraphs = []
+
+    # Try to find article body paragraphs
+    article_body = soup.find("article")
+    if article_body:
+        paragraphs = article_body.find_all("p")
+        article_paragraphs = [p.get_text().strip() for p in paragraphs if p.get_text().strip()]
+
+    # Fallback: try data-component="text-block"
+    if not article_paragraphs:
+        text_blocks = soup.find_all(attrs={"data-component": "text-block"})
+        article_paragraphs = [block.get_text().strip() for block in text_blocks if block.get_text().strip()]
+
+    return "\n\n".join(article_paragraphs)
+
+
+def build_article(title, description, link, article_id, section_name):
+    """Assemble the article dict the pipeline consumes, fetching the full page body when possible."""
+    description = description or ""
+    try:
+        full_article = fetch_article_body(link) or description
+    except Exception as e:
+        print(f"Error fetching article '{title}': {e}")
+        # Fall back to basic info even if full content fetch fails
+        full_article = ""
+
+    article_text = f"""Title: {title}
+
+{description}
+
+{full_article}""".rstrip() + "\n"
+
+    return {
+        "title": title,
+        "description": description,
+        "link": link,
+        "content": article_text,
+        "article_id": article_id,
+        "section": section_name,
+    }
+
+
+class ConversionFailed(Exception):
+    """Raised when an article could not be converted to emojipasta (as opposed to being skipped as a duplicate)."""
+
+
+def process_single_article(article_data, hash_key, known_hashes, hashes_lock, timestamp=None):
     """
     Process a single article: convert to emojipasta and save to JSON.
-    Returns the filename of the saved JSON file or None if skipped.
+    Returns the filename of the saved JSON file, or None if skipped as a duplicate.
+    Raises ConversionFailed if the article could not be converted.
+    `timestamp` overrides the publish time (used when backfilling missed runs).
     """
     article_text = article_data["content"]
     original_title = article_data["title"]
@@ -249,14 +249,14 @@ def process_single_article(article_data, hash_key, known_hashes, hashes_lock):
     emojipasta_data = convert_to_emojipasta(article_text, original_title)
     if not emojipasta_data:
         print(f"Skipping '{original_title}' (emojipasta conversion failed).")
-        return None
+        raise ConversionFailed(original_title)
 
     if hashed_id:
         emojipasta_data["article_id"] = hashed_id
 
     emojipasta_data["section"] = article_data.get("section")
 
-    timestamp = datetime.now(timezone.utc)
+    timestamp = timestamp or datetime.now(timezone.utc)
     emojipasta_data["date"] = str(timestamp)
     timestamp_str = timestamp.strftime("%Y%m%d_%H%M%S")
 
@@ -325,7 +325,7 @@ Break down what makes these work, so you replicate it precisely:
    - a suggestive quote or aside from a fictionalized bystander reacting to how horny the process felt.
 
 OTHER STYLE RULES:
-- Internet/meme slang: bro, bruh, sigma, npc, cooked, mid, built different, down bad, unc, etc. Use naturally, don't force every one in.
+- Internet/meme slang: bro, bruh, sigma, npc, cooked, mid, built different, down bad, unc, etc. Use naturally, don't force every one in, use them sparingly.
 - Stay factually grounded: every claim must trace back to the facts given below. Do not invent facts, quotes, or numbers — the innuendo is in the VOICE and WORD CHOICE, not fabricated plot details.
 - Output ONE paragraph only, roughly 80-130 words, as a single block of text (no internal line breaks).
 
@@ -336,9 +336,25 @@ You must output valid JSON with exactly these fields:
 """
 
 
+# Errors that retrying can't fix (exhausted credits, bad key). Once one is seen, every subsequent call
+# would fail the same way, so we stop retrying and make the whole run exit non-zero at the end.
+FATAL_API_ERROR_MARKERS = ("PERMISSION_DENIED", "UNAUTHENTICATED", "spending limit", "available credits", "Incorrect API key")
+fatal_api_error: str | None = None
+_fatal_lock = Lock()
+
+
+def _api_error_summary(exc: Exception) -> str:
+    msg = str(exc)
+    m = re.search(r'details = "(.*?)"', msg)
+    return m.group(1) if m else msg.strip().splitlines()[0][:300]
+
+
 def _chat_json(client, system_prompt, user_prompt, retry_note=""):
     """One JSON-mode chat call with a couple of retries on parse failure. Returns the parsed dict or None."""
+    global fatal_api_error
     for attempt in range(3):
+        if fatal_api_error:
+            return None
         try:
             chat = client.chat.create(model=MODEL)
             chat.append(system(system_prompt))
@@ -349,6 +365,12 @@ def _chat_json(client, system_prompt, user_prompt, retry_note=""):
         except json.JSONDecodeError as e:
             print(f"    JSON parse failed (attempt {attempt + 1}): {e}")
         except Exception as e:
+            if any(marker in str(e) for marker in FATAL_API_ERROR_MARKERS):
+                with _fatal_lock:
+                    if not fatal_api_error:
+                        fatal_api_error = _api_error_summary(e)
+                        print(f"    FATAL xAI API error (will not retry): {fatal_api_error}")
+                return None
             print(f"    Unexpected error (attempt {attempt + 1}): {e}")
     return None
 
@@ -536,6 +558,7 @@ def main():
     print("Converting articles to emojipasta with Grok (processing in parallel)...")
 
     saved_files = []
+    failed = 0
     with ThreadPoolExecutor(max_workers=min(len(articles), 5) or 1) as executor:  # Limit to 5 concurrent requests
         # Submit all tasks
         future_to_article = {
@@ -548,11 +571,15 @@ def main():
             article = future_to_article[future]
             try:
                 filename = future.result()
-                saved_files.append(filename)
+                if filename:
+                    saved_files.append(filename)
+            except ConversionFailed:
+                failed += 1
             except Exception as exc:
+                failed += 1
                 print(f"Article '{article['title']}' generated an exception: {exc}")
 
-    print(f"\nConversion complete! Processed {len(saved_files)} articles.")
+    print(f"\nConversion complete! Saved {len(saved_files)} of {len(articles)} articles ({failed} failed).")
     print("Saved files:")
     for filename in saved_files:
         print(f"  - {filename}")
@@ -570,6 +597,15 @@ def main():
                 )
         except Exception as e:
             print(f"Could not load preview: {e}")
+
+    # A run that fetched articles but converted none of them is broken, not "nothing new" — fail loudly so the
+    # GitHub Action goes red instead of silently succeeding with an empty commit step.
+    if fatal_api_error:
+        print(f"\nERROR: xAI API rejected requests: {fatal_api_error}", file=sys.stderr)
+        sys.exit(1)
+    if failed and not saved_files:
+        print(f"\nERROR: all {failed} conversion attempt(s) failed; nothing was saved.", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
