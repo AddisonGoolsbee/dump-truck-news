@@ -325,7 +325,7 @@ Break down what makes these work, so you replicate it precisely:
    - a suggestive quote or aside from a fictionalized bystander reacting to how horny the process felt.
 
 OTHER STYLE RULES:
-- Internet/meme slang: bro, bruh, no cap, fr fr, ratio'd, W/L, rent free, delulu, sigma, npc, cooked, mid, built different, down bad, canon event, main character energy, unc, etc. Use naturally, don't force every one in.
+- Internet/meme slang: bro, bruh, sigma, npc, cooked, mid, built different, down bad, unc, etc. Use naturally, don't force every one in.
 - Stay factually grounded: every claim must trace back to the facts given below. Do not invent facts, quotes, or numbers — the innuendo is in the VOICE and WORD CHOICE, not fabricated plot details.
 - Output ONE paragraph only, roughly 80-130 words, as a single block of text (no internal line breaks).
 
