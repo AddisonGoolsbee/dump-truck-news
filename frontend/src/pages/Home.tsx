@@ -6,7 +6,9 @@ import { formatDate, type NewsItem } from "../news";
 const truncate = (text: string, limit = 220) => (text.length > limit ? `${text.slice(0, limit).trimEnd()}…` : text);
 
 // Fixed display order for known sections; anything else falls back to alphabetical after these.
-const SECTION_ORDER = ["US & Canada", "World", "Business", "Technology", "Entertainment"];
+const SECTION_ORDER = ["US & Canada", "World", "Technology"];
+// Sections we no longer publish; their older articles still show under "All" but get no tab.
+const RETIRED_SECTIONS = ["Business", "Entertainment"];
 const DEFAULT_SECTION = "US & Canada";
 
 export default function Home({ news, error }: { news: NewsItem[]; error: string | null }) {
@@ -17,7 +19,7 @@ export default function Home({ news, error }: { news: NewsItem[]; error: string 
   const sections = useMemo(() => {
     const present = new Set(news.map((item) => item.section).filter((s): s is string => Boolean(s)));
     const known = SECTION_ORDER.filter((s) => present.has(s));
-    const rest = [...present].filter((s) => !SECTION_ORDER.includes(s)).sort();
+    const rest = [...present].filter((s) => !SECTION_ORDER.includes(s) && !RETIRED_SECTIONS.includes(s)).sort();
     return ["All", ...known, ...rest];
   }, [news]);
 

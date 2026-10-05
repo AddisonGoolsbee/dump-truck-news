@@ -4,6 +4,8 @@ import sys
 import json
 import re
 import hashlib
+import random
+import difflib
 import requests
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone, timedelta
@@ -27,39 +29,90 @@ EMOJI_PATTERN = re.compile(
 )
 
 
+# One emoji: a flag pair, or a base emoji plus any skin-tone/variation/ZWJ/keycap continuations.
+SINGLE_EMOJI_PATTERN = re.compile(
+    r"(?:[\U0001F1E6-\U0001F1FF]{2}|[\U0001F300-\U0001FAFF☀-➿⬀-⯿]"
+    r"(?:[\U0001F3FB-\U0001F3FF]|️|‍[\U0001F300-\U0001FAFF☀-➿⬀-⯿]️?|⃣)*)"
+)
+
+
+def _words(text: str) -> list[str]:
+    return [w for w in EMOJI_PATTERN.sub(" ", text).split() if any(c.isalnum() for c in w)]
+
+
 def emoji_density(text: str) -> float:
-    """Emoji-clusters per 100 characters (a cluster = one or more adjacent emoji, i.e. one 'attachment point')."""
-    if not text:
+    """Emoji per 100 words. Real r/emojipasta posts have a median of ~58 (Oct 2026 sample of 150 posts)."""
+    words = _words(text)
+    if not words:
         return 0.0
-    return len(EMOJI_PATTERN.findall(text)) / len(text) * 100
+    return len(SINGLE_EMOJI_PATTERN.findall(text)) / len(words) * 100
 
 
-MAX_CAPS_RATIO = 0.50
+def stack_ratio(text: str) -> float:
+    """Fraction of emoji attachment points that are stacks of 2+ emoji. Real r/emojipasta is ~50%."""
+    clusters = [c for c in EMOJI_PATTERN.findall(text) if SINGLE_EMOJI_PATTERN.search(c)]
+    if not clusters:
+        return 0.0
+    return sum(1 for c in clusters if len(SINGLE_EMOJI_PATTERN.findall(c)) >= 2) / len(clusters)
+
+
+def emoji_variety(text: str) -> float:
+    """Distinct emoji / total emoji. Real r/emojipasta is ~0.67; spammy metronome output drops toward 0.3."""
+    emoji = SINGLE_EMOJI_PATTERN.findall(text)
+    return len(set(emoji)) / len(emoji) if emoji else 0.0
+
+
+def tail_density(text: str) -> float:
+    """emoji_density of the last third of the text, to catch the model running out of steam."""
+    return emoji_density(text[-(len(text) // 3):])
 
 
 def caps_ratio(text: str) -> float:
     """Fraction of alphabetic words that are ALL CAPS. Independent axis from emoji density."""
-    words = [w for w in text.split() if any(c.isalpha() for c in w)]
+    words = [w for w in _words(text) if any(c.isalpha() for c in w)]
     if not words:
         return 0.0
     caps = [w for w in words if w.isupper() and len(w) > 1]
     return len(caps) / len(words)
 
 
-# Generic "AI slop" reaction-face emoji — easy to reach for as filler, but overusing them is what
-# makes dense emoji read as mechanical rather than witty. Real emojipasta leans on concrete/literal/
-# pun emoji (objects, animals, food, tools) tied to a specific word, not a recycled hype-face.
-SLOP_EMOJI = {"😤", "😩", "🥵", "😳", "🔥", "💯", "🙏", "😭", "💀", "🤯", "✨", "😏"}
-MAX_SLOP_RATIO = 0.15
+# Sexual markers; a post containing any of these must not mention children.
+SEXUAL_PATTERN = re.compile(
+    r"🍆|💦|🍑|👅|💋|🥵|\b(?:(?:slut|whore|daddy|dilf|thicc|orgy|orgies|horny|thirst|goon|cumm)\w*|hoes?|cum|loads?)\b",
+    re.IGNORECASE,
+)
+
+# The prompt rule alone wasn't reliable at keeping children out of the posts, so it's also checked in code.
+MINOR_PATTERN = re.compile(
+    r"(?<!\u200d)(?:🧒|👶|👧|👦)(?!\u200d)|🚸|\b(?:child|children|kids?|teen\w*|schools?|pupils?|minors?|under[- ]?1[0-7]"
+    r"|aged? (?:1[0-7]|[1-9])|since (?:they were|age) \w+)\b",
+    re.IGNORECASE,
+)
+CHILD_EMOJI = {"🧒", "👶", "👧", "👦", "🚸"}
+
+# Stories about sexual violence or children being harmed are skipped rather than turned into emojipasta.
+SEXUAL_VIOLENCE_PATTERN = re.compile(
+    r"\b(?:rap(?:e|ed|es|ist|ists|ing)|sexual(?:ly)? (?:assault|abus)\w*|molest\w*|p(?:a)?edophil\w*|grooming"
+    r"|child abuse|sex(?:ual)? trafficking)\b",
+    re.IGNORECASE,
+)
+CHILD_HARM_PATTERN = re.compile(
+    r"\b(?:child|children|kids?|bab(?:y|ies)|toddlers?|infants?|sons?|daughters?|pupils?|schoolchildren|teenagers?)\b"
+    r"\W+(?:\w+\W+){0,6}?(?:kill\w*|dead|deaths?|died|murder\w*|injur\w*|abus\w*|shot|stabb\w*|drown\w*|starv\w*)\b"
+    r"|\b(?:kill\w*|deaths?|died|murder\w*|injur\w*|abus\w*|shot|stabb\w*|drown\w*|starv\w*)\W+(?:\w+\W+){0,6}?"
+    r"(?:child|children|kids?|bab(?:y|ies)|toddlers?|infants?|sons?|daughters?|pupils?|schoolchildren|teenagers?)\b",
+    re.IGNORECASE,
+)
+LEDE_CHARS = 1200  # title + description + the first couple of paragraphs
 
 
-def slop_ratio(text: str) -> float:
-    """Fraction of all emoji instances that come from the generic reaction-face 'slop' set."""
-    clusters = EMOJI_PATTERN.findall(text)
-    if not clusters:
-        return 0.0
-    slop = sum(1 for c in clusters if c in SLOP_EMOJI)
-    return slop / len(clusters)
+def is_skipped_topic(article_text: str) -> bool:
+    """Sexual violence, or children being killed/hurt, in the headline or opening paragraphs."""
+    lede = article_text[:LEDE_CHARS]
+    return bool(SEXUAL_VIOLENCE_PATTERN.search(lede) or CHILD_HARM_PATTERN.search(lede))
+
+
+NICKNAME_CHANCE = 0.35  # a thirsty nickname in every post got monotonous
 
 # Thumbnail generation costs ~$0.04/image via OpenAI; keep off until we want to pay for it again.
 ENABLE_THUMBNAILS = os.getenv("ENABLE_THUMBNAILS", "false").lower() in ("1", "true", "yes")
@@ -67,9 +120,7 @@ ENABLE_THUMBNAILS = os.getenv("ENABLE_THUMBNAILS", "false").lower() in ("1", "tr
 SECTIONS = [
     {"name": "US & Canada", "rss": "https://feeds.bbci.co.uk/news/world/us_and_canada/rss.xml"},
     {"name": "World", "rss": "https://feeds.bbci.co.uk/news/world/rss.xml"},
-    {"name": "Business", "rss": "https://feeds.bbci.co.uk/news/business/rss.xml"},
     {"name": "Technology", "rss": "https://feeds.bbci.co.uk/news/technology/rss.xml"},
-    {"name": "Entertainment", "rss": "https://feeds.bbci.co.uk/news/entertainment_and_arts/rss.xml"},
 ]
 
 # Load environment variables from .env file in the backend directory
@@ -221,7 +272,7 @@ class ConversionFailed(Exception):
 def process_single_article(article_data, hash_key, known_hashes, hashes_lock, timestamp=None):
     """
     Process a single article: convert to emojipasta and save to JSON.
-    Returns the filename of the saved JSON file, or None if skipped as a duplicate.
+    Returns the filename of the saved JSON file, or None if skipped (duplicate, or a topic we don't convert).
     Raises ConversionFailed if the article could not be converted.
     `timestamp` overrides the publish time (used when backfilling missed runs).
     """
@@ -239,6 +290,10 @@ def process_single_article(article_data, hash_key, known_hashes, hashes_lock, ti
             # Reserve the hash immediately (not after processing) so two articles
             # with the same id running concurrently can't both slip past the check.
             known_hashes.add(hashed_id)
+
+    if is_skipped_topic(article_text):
+        print(f"Skipping '{original_title}' (sexual violence or harm to children).")
+        return None
 
     print(f"Converting article to emojipasta: {original_title}")
 
@@ -297,32 +352,103 @@ MODEL = os.getenv("XAI_MODEL", "grok-4.20-non-reasoning")
 MAX_RUN_COST_USD = float(os.getenv("MAX_RUN_COST_USD", "0.10"))
 # One retry at most when the output comes back sparse; each attempt is ~0.5c, and the retries were the old cost sink.
 MAX_ATTEMPTS = 2
-MIN_EMOJI_PER_100_CHARS = 5.0
+# Targets measured from 150 r/emojipasta posts (Oct 2026): median ~120 words, ~58 emoji per 100 words,
+# ~half of emoji spots are stacks of 2+, ~25% of words in caps, and no density drop-off at the end.
+MIN_EMOJI_PER_100_WORDS = 40.0
+MAX_WORDS = 280
+MAX_EMOJI_PER_100_WORDS = 85.0
+MIN_EMOJI_VARIETY = 0.45
 
 STYLE_RULES = """
-You are an r/emojipasta poster rewriting a real news article as unhinged "emojipasta": internet copypasta that reads like it was typed by someone way too invested, at 2am, mid rant. Respond with valid JSON only.
+You write posts for r/emojipasta: you turn a real news article into ONE short, unhinged, thirsty emojipasta copypasta. Respond with valid JSON only.
 
-Example of the target style (study the density, the single-emoji attachments, the caps ratio, the innuendo):
-"SENATE 🏛️ FINALLY 🏁 busts 💦 a NUT 🥜 on that 2 TRILLION 💰 dollar 💵 infraSTUDcture 🍆 bill 📜 after a MARATHON 🏃‍♂️ 15-hour 🕐 session that left 😵‍💫 everyone 🫠 DRIPPING 💧 with EXHAUSTION 🥵!! Majority 👑 Leader 👔 Dale 🍑 Whitfield, affectionately 💅 known 🏷️ as DILF 🐺 Dale to the interns 👀, STROKED 👐 every senator's 🧑‍⚖️ ego 🥴 one by one 🔂 until they FOLDED 🙇‍♂️ like a cheap 💸 lawn chair 🪑, finally SEALING 💍 the deal 🤝 at 3am 🌙 with a 62-38 vote 🗳️!! "We got RAILED 💦 by the process ⚙️," admitted 🎙️ Senator Beth Carrow, "but honestly 🤭? Kinda into it 😳.""
+Two examples of the exact style (copy the style, never these facts, nicknames, groups or punchlines):
+
+METAPHOR: road building as sex: laying pipe, filling holes, steamrolling, tight joints
+PUNS: infraSTUDcture, SenatWHORE, BUSTpartisan, CUMmittee
+HEADLINE: SENATE 🏛️💦 LAYS PIPE 🔧🍆 on $2 TRILLION infraSTUDcture BILL 🛣️😩
+TEXT:
+🚨🏛️ATTENTION all you CAPITOL HILL HOES🏛️🚨 the SENATE 🍑🍑 spent 1️⃣5️⃣ HOURS 🕒😩 LAYING PIPE 🔧🍆 all night 🌙 until it finally SHOT 💦💦 a $2 TRILLION 💰💰 infraSTUDcture bill 📜🍆 out of CUMmittee at 3am ⏰👀‼️ Majority Leader Dale Whitfield aka DILF DALE 🐺😍 kept every SenatWHORE 🧑‍⚖️💋 BENT over their desk 🪑🙇 until they gave it up 6️⃣2️⃣➖3️⃣8️⃣ 🗳️✅ in a sweaty BUSTpartisan finish 🥵 and Senator Beth Carrow 💅 admitted "we got RAILED 🚂💦 by the process" 😳‼️
+
+Now the cash 💸💸 goes DEEP 🕳️👀 into America's POTHOLES 🕳️🍆 so every road 🛣️ gets FILLED, PACKED and STEAMROLLED 🚜💦 nice and SMOOTH 😌🍑 while the BRIDGES 🌉 get their TIGHT little JOINTS 🔩🔩 reinforced 💪‼️ The House 🏠 still has to SWALLOW 😳👄 it next week 📅 so stay HYDRATED 💧💧💧
+
+SEND 📩 this to 🔟 of your THICCEST 🍑 taxpayers 💸
+0️⃣ back = your commute stays BUMPY 🚗🕳️😭
+5️⃣ back = you get fresh ASPHALT 🛣️😌 by Friday
+🔟 back = DILF DALE lays PIPE 🔧🍆 under YOUR street TONIGHT 🌙💦
+
+METAPHOR: chips and hardware as arousal: hardware getting HARD, racks, overclocking, going soft
+PUNS: GPUssy, Blackwell → BlackWELL-HUNG, DICKital, HARDware
+HEADLINE: NVIDIA 💚 whips out 🍆 $57BN and Wall Street CAN'T TAKE IT 😩📈
+TEXT:
+📢💚 HEY all you GPU GOONERS 🖥️🤤 NVIDIA just whipped out 🍆👀 its Q3 numbers 📊 and they're HUGE 📏😳 revenue SWELLED 🍆📈 62% to a THICC $57BN 💰🍑 with the data centre RACKS 🖥️🍒 alone pulling $51BN 😩💦 Everyone kept MOANING 😩😩 that the AI BUBBLE 🫧🫧 was about to POP 💥 but DADDY JENSEN 🕶️🧥 slid into his leather 🧥😈 and said the BlackWELL-HUNG 🍆⚫ chips are "OFF THE CHARTS" 📊🚀 so the cloud GPUssy 🖥️🐱 is SOLD OUT 🚫🛒 and the whole DICKital economy 💻💦 is waiting its turn ⏳‼️ Shares got STIFF 🍆📈 4% after hours 🌙 and the Q4 forecast is a $65BN LOAD 🤑💦 so Wall Street 🐂 is getting its PORTFOLIO PLOWED 🚜📈 whether it's ready or not 😳‼️
+
+SEND 📩 this to 6️⃣9️⃣ of your NERDIEST 🤓 chip SLUTS 🖥️💋
+0️⃣ back = your HARDware goes SOFT 📉🍆
+🔟 back = DADDY JENSEN overclocks YOU ⚡🧥😍
 
 Rules:
-1. DENSITY: roughly one emoji every 1-3 words, all the way to the LAST sentence — do not taper off. Vary the gaps so it doesn't read like a metronome.
-2. SINGLES: about 90% of attachment points are exactly ONE emoji. At most one 2-emoji stack per paragraph, for the biggest punchline.
-3. PICK LITERAL/PUN EMOJI tied to the specific word next to them (objects, animals, food, tools, weather, body parts). Do not lean on generic reaction faces (😤 😩 🥵 😳 🔥 💯 🙏 😭 💀 🤯 ✨ 😏) as filler; don't repeat any one emoji more than ~3 times per paragraph.
-4. CAPS: a third to half of words in caps for emphasis, never all of them — small words stay lowercase.
-5. PUNCTUATION: full normal sentences with commas, periods, quotes and "!!". Emoji are inserted between words, never replacing punctuation.
-6. INNUENDO in every paragraph: word-mangling swaps (infraSTUDcture, legiSLAYtion, approPORNiate), reframing the mundane action as a horny encounter (negotiating = edging, a deal closing = the climax, a long session = getting railed), a running thirsty nickname for ONE named person or entity (e.g. "Wab Kinew" -> "Wab Daddy") used throughout, and the odd suggestive aside from a fictional bystander. Keep it innuendo, not explicit.
-7. Light meme slang (bro, cooked, down bad, unc, built different) — sparingly.
-8. FACTS: every claim must trace back to the article. Keep names, numbers and quotes accurate. Don't invent plot details; the comedy is in the voice.
+1. EVERY story gets the full thirst: wars, deaths, crime, disasters and executions included, no holding back (r/emojipasta does horny pastas about all of it). Aim it at the attackers, the weapons, the politicians, the institutions and the absurdity.
+2. LENGTH: 120-200 words TOTAL. One or two short paragraphs, then the chain-letter closer. The facts are only the skeleton: use 3-5 of them and spend the words on the jokes; never pad, never recap the article.
+3. DENSITY: about one emoji per two words (50-60 emoji per 100 words) and NEVER more than 3 words in a row without an emoji, from the first line to the last. Roughly half the emoji spots are stacks of 2-3 (🍑🍑, 💦💦💦, 📈🚀), the rest singles. Put each emoji right after the word it illustrates, mostly literal or a pun (POTHOLE 🕳️🍆). Numbers often become keycaps (6️⃣9️⃣, 🔟).
+4. OPENER: shout at an audience themed to this story, in the shape you are given with the article.
+5. CLOSER: a chain letter in the shape you are given with the article, each line a joke about THIS story's facts.
+6. VOICE: run-on, breathless, sentences slamming into each other, ‼️ and !!!, about a third of words in CAPS (the punchy nouns and verbs, not every word).
+7. THIRST, and the innuendo is the whole point:
+   a) METAPHOR: pick ONE dirty extended metaphor from the story's own world (oil = PUMPING, DRILLING, a fat LOAD of crude; roads = LAYING PIPE, FILLING holes; a museum = TOUCHING the exhibits; a smart ring = FINGERING) and run it through every sentence.
+   b) PUNS: 3-5 word-mangling sexual puns built from words IN THIS story (circumference = cirCUMference, Senator = SenatWHORE, diameter = DICKameter, Brexit = BREASTxit), and use every one of them in the text.
+   c) Every sentence carries a double entendre. A sentence that is just a fact with emoji and caps is a failure.
+   d) Stock words (EDGED, RAILED, THICC, LOAD, DADDY, SLAY, BUSTED, ORGY) at most twice in total; the jokes have to come from THIS story's words.
+   🍆💦🍑 and crude innuendo are on; describing actual sex acts is off, and so is any sexual joke within reach of children or anyone under 18 (leave them out of a thirsty post entirely).
+8. FACTS: names, numbers and quotes come from the article and stay accurate. Don't invent events. No slurs. Punch up: the jokes target politicians, institutions and the absurdity, never migrants, refugees, religious or ethnic groups, and the chain letter doesn't take a side on contested politics.
+9. HEADLINE: under 10 words, CAPS bursts, a pun, 3-5 emoji including one stack.
 
-Write a headline (under 10 words, normal capitalization with a couple of CAPS bursts and 2-4 emoji) and 5-6 paragraphs of 80-130 words each, covering the article's facts in order, separated by blank lines.
-
-Output JSON exactly as:
-{
-    "headline": "...",
-    "text": "paragraph 1\\n\\nparagraph 2\\n\\n..."
-}
+Output JSON exactly as (plan the metaphor and puns first, then write):
+{"metaphor": "...", "puns": ["...", "..."], "headline": "...", "text": "..."}
+Use \\n for line breaks inside "text" (blank line between paragraphs, single line breaks between the chain-letter lines).
 """
+
+# Second, cheap pass used when the first draft comes back sparse. A non-reasoning model writes good voice but
+# under-emojis, and told to "add more" it either barely changes anything or spams one emoji after every word. So the
+# code picks the spots (numbered slots after punchy words in long emoji-free stretches) and the model only chooses
+# what goes in each slot, which keeps the density in range and leaves the words untouched.
+SLOT_FILL_RULES = """
+You pick emoji for an r/emojipasta post. The post has numbered slots like [[3]]. For each slot choose emoji for the word
+right before it: a literal match or a pun. ODD-numbered slots get a stack of 2-3 emoji (a combo like 📈🚀 or a repeat
+for emphasis like 💦💦💦); EVEN-numbered slots get exactly one. A slot glued straight onto an emoji (like 🔥[[4]]) gets
+exactly one extra emoji that goes with that emoji and word. Use lots of different emoji; never repeat what is right
+next to the slot. Respond with JSON only, mapping every slot number to its emoji, e.g. for
+"POTHOLE [[1]] ... VOTE [[2]] ... SURGED [[3]]": {"1": "🕳️🍆", "2": "🗳️", "3": "📈📈🚀"}
+"""
+SMALL_WORDS = {
+    "a", "an", "the", "to", "of", "and", "or", "but", "in", "on", "at", "for", "with", "by", "from", "as", "is", "are",
+    "was", "were", "be", "been", "it", "its", "it's", "his", "her", "their", "our", "your", "my", "this", "that", "so",
+    "just", "up", "out", "all", "you", "we", "they", "he", "she", "i", "who", "than", "then", "after", "into", "about",
+}
+# One opener and one closer shape is picked at random per article; with only the examples to go on, the model opens
+# and closes every post the same way. These are the common shapes in r/emojipasta.
+OPENER_SHAPES = [
+    '"🚨🚨ATTENTION all you <themed group>🚨🚨"',
+    '"‼️WAKE UP <themed group>‼️"',
+    '"📢 calling ALL <themed group> 📢"',
+    '"OMG 😱😱 did you HEAR"',
+    '"BREAKING 🚨📰 NEWS for all the <themed group>"',
+    '"Listen 👂 up 👆 you <themed group>"',
+    '"HEY 👋 <themed group> 😍"',
+    '"WHAT 😳 THE 😳 F*CK 😳 is UP <themed group>" (one emoji between each opening word)',
+    '"It\'s <day or event> 📅 you know what that means 😏"',
+    '"<themed group> RISE UP ⬆️⬆️"',
+]
+CLOSER_SHAPES = [
+    '"SEND 📩 this to <keycap number> <-est themed group>" then lines "0️⃣ back = ...", "<n> back = ...", "<n> back = ..."',
+    '"If you don\'t send this to <keycap number> <themed group> by midnight 🌙 ..." then one line of curse and one of reward',
+    '"Get 0️⃣ back, you\'re a ...", "Get <n> back, you\'re ...", "Get <n>+ back, you\'re ..." (one per line)',
+    '"PASS 🔁 this on to <keycap number> <themed group> or ..." then 2 lines "0️⃣ back = ...", "<n> back = ..."',
+    '"FORWARD ➡️ to <keycap number> <themed group>" then lines starting ❌ for what happens if you don\'t and ✅ if you do',
+]
+DENSIFY_TARGET_PER_100_WORDS = 58.0  # the r/emojipasta median
+EMOJI_PER_SLOT = 1.5  # about half the slots come back as stacks
+STACK_UPGRADE_BELOW = 0.4  # below this share of stacked emoji spots, every other single emoji gets a slot too
 
 
 # Errors that retrying can't fix (exhausted credits, bad key). Once one is seen, every subsequent call
@@ -387,10 +513,128 @@ def _chat_json(client, system_prompt, user_prompt):
     return None, cost
 
 
+MIN_PUNS_USED = 3
+
+
+def clean_model_text(text: str) -> str:
+    """Grok occasionally emits a broken emoji as U+FFFD. Repair keycaps ("2️�" -> "2️⃣") and drop the rest."""
+    text = re.sub(r"([0-9#*])\ufe0f?\ufffd", "\\1\ufe0f\u20e3", text)
+    text = text.replace("\ufffd", "")
+    return re.sub(r"(?<=\S) {2,}(?=\S)", " ", text)
+
+
+def puns_used(text: str, puns) -> int:
+    """How many of the planned puns ("cirCUMference", or "Blackwell → BlackWELL-HUNG") appear in the text."""
+    low = text.lower()
+    found = 0
+    for pun in puns if isinstance(puns, list) else []:
+        word = re.sub(r"\(.*?\)", "", re.split(r"→|->|=|:", str(pun))[-1]).strip(" \"'").lower()
+        if word and word in low:
+            found += 1
+    return found
+
+
+def _problems(text: str, headline: str, puns=None) -> tuple[list[str], list[str]]:
+    """Returns (style problems, content problems). Style problems are tolerated in a last-resort fallback;
+    content problems (children mentioned in a sexual post) never are."""
+    problems, content = [], []
+    density, words = emoji_density(text), len(_words(text))
+    if density < MIN_EMOJI_PER_100_WORDS:
+        problems.append(f"only {density:.0f} emoji per 100 words (needs 50-60)")
+    if tail_density(text) < MIN_EMOJI_PER_100_WORDS:
+        problems.append("the ending runs out of emoji")
+    if words > MAX_WORDS:
+        problems.append(f"{words} words (needs 120-220)")
+    if density > MAX_EMOJI_PER_100_WORDS:
+        problems.append(f"{density:.0f} emoji per 100 words is spam (needs 50-60)")
+    if puns_used(f"{text} {headline}", puns) < MIN_PUNS_USED:
+        problems.append(
+            f"only {puns_used(f'{text} {headline}', puns)} of your puns made it into the text (needs {MIN_PUNS_USED}+); "
+            f"build the jokes from this story's own words and keep a double entendre in every sentence"
+        )
+    if emoji_variety(text) < MIN_EMOJI_VARIETY:
+        problems.append("the same few emoji are repeated over and over")
+    # Also check with emoji stripped, since a slot can land inside a phrase ("since 🕰️ they were SEVEN").
+    plain = " ".join(EMOJI_PATTERN.sub(" ", f"{text} {headline}").split())
+    if SEXUAL_PATTERN.search(text) and MINOR_PATTERN.search(f"{text} {headline} {plain}"):
+        minors = " ".join(sorted({m.lower() for m in MINOR_PATTERN.findall(f"{text} {headline} {plain}")}))
+        content.append(f"it mentions children/ages under 18 ({minors}) in a sexual post; leave every child out of it")
+    return problems, content
+
+
+def _add_slots(text: str, after_bare_words: int) -> tuple[str, int]:
+    """Insert " [[n]]" after punchy words once `after_bare_words` words in a row have had no emoji, and, when the draft
+    has too few stacks, glue "[[n]]" onto every other single emoji so it can become a stack.
+    Returns (slotted text, slot count)."""
+    out, bare, n = [], 0, 0
+    upgrade_singles, singles_seen = stack_ratio(text) < STACK_UPGRADE_BELOW, 0
+    tokens = re.split(r"(\s+)", text)
+    for i, token in enumerate(tokens):
+        if not token or token.isspace():
+            out.append(token)
+            if "\n" in token:
+                bare = 0  # chain-letter lines and paragraphs start fresh
+            continue
+        if EMOJI_PATTERN.search(token):
+            bare = 0
+            clusters = EMOJI_PATTERN.findall(token)
+            next_token = next((t for t in tokens[i + 1:] if t and not t.isspace()), "")
+            if (upgrade_singles and token.endswith(clusters[-1]) and len(SINGLE_EMOJI_PATTERN.findall(clusters[-1])) == 1
+                    and not EMOJI_PATTERN.match(next_token)):
+                singles_seen += 1
+                if singles_seen % 2:
+                    n += 1
+                    token = f"{token}[[{n}]]"
+            out.append(token)
+            continue
+        core = token.rstrip(".,;:!?\"')‼…")
+        word = core.lower().strip("\"'(")
+        bare += 1
+        next_word = next((t for t in tokens[i + 1:] if t and not t.isspace()), "")
+        if (bare > after_bare_words and word not in SMALL_WORDS and any(c.isalnum() for c in word)
+                and not EMOJI_PATTERN.match(next_word)
+                and not (core.istitle() and next_word.istitle())):  # don't split "Stephen Ferrell"
+            n += 1
+            bare = 0
+            token = f"{core} [[{n}]]{token[len(core):]}"
+        out.append(token)
+    return "".join(out), n
+
+
+def _densify(client, text: str) -> tuple[str | None, float]:
+    """Fill emoji into code-chosen slots of an existing draft. Returns (new text or None, cost in USD)."""
+    # Use the widest slot spacing that is projected to reach the target density.
+    words, have = len(_words(text)), len(SINGLE_EMOJI_PATTERN.findall(text))
+    for after_bare_words in (3, 2, 1):
+        slotted, n = _add_slots(text, after_bare_words)
+        if (have + n * EMOJI_PER_SLOT) / max(words, 1) * 100 >= DENSIFY_TARGET_PER_100_WORDS:
+            break
+    if not n:
+        return None, 0.0
+    result, cost = _chat_json(client, SLOT_FILL_RULES, slotted)
+    if not isinstance(result, dict):
+        return None, cost
+
+    def fill(m):
+        # Keep only emoji from the answer, minus any that already sit on the neighbouring words (the model tends to
+        # echo the next word's emoji), and drop the slot entirely if nothing is left. A slot glued to an emoji (no
+        # leading space) only adds one, turning that emoji into a 2-stack.
+        space, slot = m.groups()
+        nearby = set(SINGLE_EMOJI_PATTERN.findall(slotted[max(0, m.start() - 40):m.end() + 40]))
+        picked = [e for e in SINGLE_EMOJI_PATTERN.findall(str(result.get(slot, ""))) if e not in nearby | CHILD_EMOJI]
+        return space + "".join(picked[:3 if space else 1]) if picked else ""
+
+    new_text = re.sub(r"( ?)\[\[(\d+)\]\]", fill, slotted)
+    if emoji_density(new_text) > MAX_EMOJI_PER_100_WORDS:
+        return None, cost
+    return new_text, cost
+
+
 def convert_to_emojipasta(article_text, original_title):
     """
-    One Grok call: headline + full emojipasta text. Returns {"headline", "text"} or None.
-    Density/caps/slop are measured and logged but not retried — retries were the main cost driver.
+    One Grok call writes headline + emojipasta from the article; if it comes back too sparse, a second small call
+    (draft only) adds emoji. The full call is retried once (MAX_ATTEMPTS) for bad JSON, length or content problems.
+    Returns {"headline", "text"} or None.
     """
     api_key = os.getenv("XAI_API_KEY")
     if not api_key:
@@ -405,9 +649,16 @@ def convert_to_emojipasta(article_text, original_title):
 
     base_prompt = (
         f"Article title: {original_title}\n\nArticle content:\n{article_text}\n\n"
-        f"Now write the emojipasta. HARD REQUIREMENT: an emoji after every 1-3 words, in EVERY sentence of EVERY "
-        f"paragraph — that is 35-50 emoji per paragraph, {MIN_EMOJI_PER_100_CHARS:.0f}+ emoji per 100 characters. "
-        f"A paragraph with only a handful of emoji is a failure. Output only the JSON described."
+        f"Now write the emojipasta: 120-200 words, a double entendre in every sentence, about one emoji per two words "
+        f"all the way through the chain-letter closer, half of the emoji spots stacked 2-3 deep.\n"
+    )
+    if random.random() < NICKNAME_CHANCE:
+        base_prompt += "Give one person or company in this story a thirsty nickname (like DADDY JACK) and reuse it.\n"
+    else:
+        base_prompt += "No thirsty nicknames in this one; get the laughs from the metaphor and puns.\n"
+    base_prompt += (
+        f"Opener shape: {random.choice(OPENER_SHAPES)}\n"
+        f"Closer shape: {random.choice(CLOSER_SHAPES)}\nOutput only the JSON described."
     )
     total_cost = 0.0
     best = None
@@ -417,28 +668,30 @@ def convert_to_emojipasta(article_text, original_title):
         total_cost += cost
         if not result or not isinstance(result.get("text"), str) or not result.get("headline"):
             continue
-        text = result["text"].strip()
-        density = emoji_density(text)
-        if best is None or density > best[0]:
-            best = (density, result["headline"], text)
-        if density >= MIN_EMOJI_PER_100_CHARS:
+        text, headline = clean_model_text(result["text"].strip()), clean_model_text(result["headline"])
+        if emoji_density(text) < DENSIFY_TARGET_PER_100_WORDS or tail_density(text) < MIN_EMOJI_PER_100_WORDS:
+            densified, cost = _densify(client, text)
+            total_cost += cost
+            text = densified or text
+        style_problems, content_problems = _problems(text, headline, result.get("puns"))
+        problems = content_problems + style_problems
+        # Prefer passing attempts, then denser ones; an attempt with a content problem is never used.
+        score = (not problems, emoji_density(text))
+        if not content_problems and (best is None or score > best[0]):
+            best = (score, headline, text)
+        if not problems:
             break
-        feedback = (
-            f"\n\nYour previous attempt had only {density:.1f} emoji per 100 characters — far too sparse, it did not "
-            f"read as emojipasta at all. Rewrite it with an emoji attached after every 1-3 words throughout, "
-            f"including the final paragraph. Keep the facts the same."
-        )
+        print(f"    attempt {attempt + 1} problems: {'; '.join(problems)}")
+        feedback = f"\n\nYour previous attempt failed: {'; '.join(problems)}. Write it again, fixing that. Keep the facts."
     if best is None:
-        print(f"  > Conversion returned no usable JSON. Aborting this article. (cost ${total_cost:.4f})")
+        print(f"  > No usable attempt (bad JSON or content problems). Aborting this article. (cost ${total_cost:.4f})")
         return None
-    cost = total_cost
     _, headline, text = best
-    result = {"headline": headline, "text": text}
     print(
-        f"  > density {emoji_density(text):.1f}/100ch, caps {caps_ratio(text) * 100:.0f}%, "
-        f"slop {slop_ratio(text) * 100:.0f}%, {len(text)} chars, cost ${cost:.4f} ({original_title[:50]})"
+        f"  > {emoji_density(text):.0f} emoji/100w (tail {tail_density(text):.0f}), stacks {stack_ratio(text) * 100:.0f}%, "
+        f"caps {caps_ratio(text) * 100:.0f}%, {len(_words(text))} words, cost ${total_cost:.4f} ({original_title[:50]})"
     )
-    return {"headline": result["headline"], "text": text}
+    return {"headline": headline, "text": text}
 
 
 def save_emojipasta_json(emojipasta_data, safe_title):

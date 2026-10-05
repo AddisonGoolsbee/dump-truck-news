@@ -33,8 +33,9 @@ From `backend/`:
 - Run: `python main.py`
 
 What it does:
-- Fetches the top article from each BBC section RSS feed (US & Canada, World, Business, Technology, Entertainment)
-- Converts each to emojipasta via one Grok call (non-reasoning model, ~0.5-1c per article)
+- Fetches the top article from each BBC section RSS feed (US & Canada, World, Technology)
+- Converts each to emojipasta via one Grok call (non-reasoning model), plus a small second call that fills in emoji when the draft is sparse (~0.5-1.5c per article total)
+- Style targets are measured from r/emojipasta (~120-200 words, ~58 emoji per 100 words, half of them stacked, ~25% caps), built around a dirty metaphor and puns from the story's own words; stories about sexual violence or children being harmed are skipped
 - Stops and fails the run if Grok spend exceeds `MAX_RUN_COST_USD` (default $0.10 per run); the run log prints the exact cost
 - Hashes the article GUID for deduplication
 - Writes JSON files into `frontend/public/news/`
